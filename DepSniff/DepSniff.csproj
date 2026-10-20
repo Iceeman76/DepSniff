@@ -8,10 +8,10 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="Microsoft.Build" Version="18.0.2" ExcludeAssets="runtime" />
+      <PackageReference Include="Microsoft.Build" Version="18.11.0" ExcludeAssets="runtime" />
       <PackageReference Include="Microsoft.Build.Locator" Version="1.11.2" />
-      <PackageReference Include="Spectre.Console" Version="0.54.0" />
-      <PackageReference Include="Spectre.Console.Cli" Version="0.53.1" />
+      <PackageReference Include="Spectre.Console" Version="0.57.2" />
+      <PackageReference Include="Spectre.Console.Cli" Version="0.57.2" />
     </ItemGroup>
 
 </Project>
