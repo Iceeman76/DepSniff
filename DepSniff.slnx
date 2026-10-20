@@ -1,3 +1,4 @@
 <Solution>
+  <Project Path="DepSniff.Tests/DepSniff.Tests.csproj" />
   <Project Path="DepSniff/DepSniff.csproj" />
 </Solution>

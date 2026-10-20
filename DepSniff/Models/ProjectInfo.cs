@@ -1,17 +1,20 @@
-﻿namespace DepSniff.Models;
+namespace DepSniff.Models;
 
-public record ProjectReferenceInfo(string Path)
+public sealed record ProjectReferenceInfo(string Path)
 {
-    public bool IsUsed { get; set; } = true;
+    public DependencyUsage Usage { get; set; }
 }
 
-public record ProjectInfo(string Name, string Path)
+public sealed record ProjectInfo(string Name, string Path)
 {
     public List<PackageReference> Packages { get; init; } = [];
     public List<ProjectReferenceInfo> ProjectReferences { get; init; } = [];
+    public List<string> TargetFrameworks { get; init; } = [];
+    public List<string> Warnings { get; init; } = [];
+    public string AssetsPath { get; init; } = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Path)!, "obj", "project.assets.json");
 }
 
-public record PackageReference(string Name, string Version, bool IsTransitive = false, string? Source = null)
+public sealed record PackageReference(string Name, string Version)
 {
-    public bool IsUsed { get; set; } = true;
+    public DependencyUsage Usage { get; set; }
 }

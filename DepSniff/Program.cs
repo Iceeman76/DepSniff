@@ -1,9 +1,7 @@
-﻿using System.Reflection;
-using System.Runtime.InteropServices;
+using DepSniff.Commands;
 using Microsoft.Build.Locator;
 using Spectre.Console;
 using Spectre.Console.Cli;
-using DepSniff.Commands;
 
 namespace DepSniff;
 
@@ -13,32 +11,16 @@ public static class Program
     {
         try
         {
-            if (!MSBuildLocator.IsRegistered)
+            if (MSBuildLocator.IsRegistered is false)
             {
-                // Try RegisterDefaults first, but it often fails in single-file apps
-                try 
-                {
-                    MSBuildLocator.RegisterDefaults();
-                }
-                catch (DllNotFoundException)
-                {
-                    // If hostfxr is not found, try to find MSBuild manually
-                    var dotNetPath = GetDotNetPath();
-                    if (!string.IsNullOrEmpty(dotNetPath))
-                    {
-                        MSBuildLocator.RegisterMSBuildPath(dotNetPath);
-                    }
-                    else
-                    {
-                        throw;
-                    }
-                }
+                MSBuildLocator.RegisterDefaults();
             }
         }
-        catch (Exception ex)
+        catch (Exception exception)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] Failed to initialize MSBuild locator.");
-            AnsiConsole.WriteException(ex);
+            AnsiConsole.WriteException(exception);
+
             return 1;
         }
 
@@ -56,53 +38,11 @@ public static class Program
         {
             return app.Run(args);
         }
-        catch (Exception ex)
+        catch (Exception exception)
         {
-            AnsiConsole.WriteException(ex);
+            AnsiConsole.WriteException(exception);
+
             return 1;
         }
-    }
-
-    private static string? GetDotNetPath()
-    {
-        try
-        {
-            var process = new System.Diagnostics.Process
-            {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "dotnet",
-                    Arguments = "--list-sdks",
-                    RedirectStandardOutput = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            process.Start();
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit();
-
-            var lines = output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
-            if (lines.Length > 0)
-            {
-                // Get the latest SDK
-                var lastLine = lines.LastOrDefault();
-                if (lastLine != null)
-                {
-                    var parts = lastLine.Split('[');
-                    if (parts.Length > 1)
-                    {
-                        var version = parts[0].Trim();
-                        var path = parts[1].Trim(' ', ']');
-                        return Path.Combine(path, version);
-                    }
-                }
-            }
-        }
-        catch
-        {
-            // Ignore and return null
-        }
-        return null;
     }
 }

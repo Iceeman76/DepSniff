@@ -1,174 +1,129 @@
-﻿using System.ComponentModel;
-using Spectre.Console;
-using Spectre.Console.Cli;
+using System.ComponentModel;
 using DepSniff.Services;
 using DepSniff.Models;
+using Spectre.Console;
+using Spectre.Console.Cli;
 
 namespace DepSniff.Commands;
 
-public class AnalyzeCommand : AsyncCommand<AnalyzeCommand.Settings>
+public sealed class AnalyzeCommand : AsyncCommand<AnalyzeCommand.Settings>
 {
-    public class Settings : CommandSettings
+    public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "[PROJECT_OR_SOLUTION]")]
         [Description("Path to .slnx or .csproj file. If omitted, searches for a single file in the current directory.")]
-        public string? Path { get; set; }
+        public string? Path { get; init; }
     }
 
-    public override async Task<int> ExecuteAsync(CommandContext context, Settings settings,
-        CancellationToken cancellationToken)
+    public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        var path = settings.Path;
-
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            path = Directory.GetCurrentDirectory();
-        }
+        var path = string.IsNullOrWhiteSpace(settings.Path) ? Directory.GetCurrentDirectory() : settings.Path;
 
         if (Directory.Exists(path))
         {
-            var files = Directory.GetFiles(path, "*.*")
-                .Where(f => f.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) || 
-                            f.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var files = Directory.GetFiles(path).Where(IsSupportedFile).Order(StringComparer.OrdinalIgnoreCase).ToList();
 
             if (files.Count == 0)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] No .slnx or .csproj file found in [yellow]{path}[/].");
+                AnsiConsole.MarkupLine($"[red]Error:[/] No .slnx or .csproj file found in [yellow]{Markup.Escape(path)}[/].");
+
                 return 1;
             }
 
             if (files.Count > 1)
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] Multiple .slnx or .csproj files found in [yellow]{path}[/]. Please specify which one to analyze.");
+                AnsiConsole.MarkupLine($"[red]Error:[/] Multiple .slnx or .csproj files found in [yellow]{Markup.Escape(path)}[/]. Please specify which one to analyze.");
+
                 foreach (var file in files)
                 {
-                    AnsiConsole.MarkupLine($"  - {Path.GetFileName(file)}");
+                    AnsiConsole.WriteLine($"  - {Path.GetFileName(file)}");
                 }
+
                 return 1;
             }
 
             path = files[0];
-            AnsiConsole.MarkupLine($"Using file: [green]{path}[/]");
+            AnsiConsole.MarkupLine($"Using file: [green]{Markup.Escape(path)}[/]");
         }
 
-        if (!File.Exists(path))
+        if (File.Exists(path) is false)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] File [yellow]{path}[/] not found.");
+            AnsiConsole.MarkupLine($"[red]Error:[/] File [yellow]{Markup.Escape(path)}[/] not found.");
+
+            return 1;
+        }
+
+        if (IsSupportedFile(path) is false)
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] Only .slnx or .csproj files are supported.");
+
             return 1;
         }
 
         var analyzer = new DependencyAnalyzer();
-        var projects = new List<ProjectInfo>();
+        var usageAnalyzer = new SemanticUsageAnalyzer();
+        var projects = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Analyzing...", async status =>
+        {
+            void OnProgress(string message) => status.Status(Markup.Escape(message));
 
-        await AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .StartAsync("Analyzing...", async ctx =>
+            var loadedProjects = path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) ? analyzer.AnalyzeSolution(path, OnProgress) : analyzer.AnalyzeProjects([path], OnProgress);
+
+            foreach (var project in loadedProjects)
             {
-                Action<string> onProgress = (msg) =>
-                {
-                    ctx.Status(msg);
-                    AnsiConsole.MarkupLine($"[grey]>[/] {msg}");
-                };
+                await usageAnalyzer.AnalyzeAsync(project, OnProgress, cancellationToken);
+            }
 
-                if (path.EndsWith(".slnx"))
-                {
-                    projects = analyzer.AnalyzeSolution(path, onProgress);
-                }
-                else if (path.EndsWith(".csproj"))
-                {
-                    onProgress("Loading project...");
-                    projects = [DependencyAnalyzer.AnalyzeProject(path)];
-                }
-                else
-                {
-                    throw new Exception("Only .slnx or .csproj are supported.");
-                }
-
-                foreach (var project in projects)
-                {
-                    onProgress($"Analyzing redundancies for {project.Name}...");
-                    // We calculate them once here to avoid doing it twice in the loop
-                    // But for now, we just want the progress to be shown
-                }
-
-                // Move usage analysis here to show progress BEFORE tables
-                foreach (var project in projects)
-                {
-                    // Use ctx.Status for usage analysis to NOT print it to console
-                    ctx.Status($"Analyzing usage for {project.Name}...");
-                    analyzer.AnalyzeUsage(project);
-                }
-
-                onProgress("Finalizing analysis...");
-            });
+            return loadedProjects;
+        });
 
         if (projects.Count == 0)
         {
             AnsiConsole.MarkupLine("[yellow]No projects found to analyze.[/]");
+
             return 0;
         }
+
+        AnsiConsole.WriteLine("Usage is determined by the C# compiler. Transitive references are removal candidates; verify versions, build assets and all target frameworks before removing them.");
 
         foreach (var project in projects)
         {
             var redundantProjects = analyzer.FindRedundantReferences(project, projects);
             var redundantPackages = DependencyAnalyzer.FindRedundantPackages(project);
+            var table = new Table().AddColumn("Type").AddColumn("Name").AddColumn("Version").AddColumn("Usage").AddColumn("Transitive via");
 
-            var table = new Table();
-            table.AddColumn("Type");
-            table.AddColumn("Name");
-            table.AddColumn("Version");
-            table.AddColumn("Status");
-
-            foreach (var pkg in project.Packages.Where(p => !p.IsTransitive))
+            foreach (var package in project.Packages)
             {
-                var redundancy =
-                    redundantPackages.FirstOrDefault(r => r.Name.Equals(pkg.Name, StringComparison.OrdinalIgnoreCase));
-                
-                string status;
-                if (redundancy != null)
-                {
-                    status = $"[red]Redundant (Transitive via {redundancy.Source})[/]";
-                }
-                else if (!pkg.IsUsed)
-                {
-                    status = "[yellow]Uncertain (Not found in code)[/]";
-                }
-                else
-                {
-                    status = "[green]Necessary[/]";
-                }
-                
-                table.AddRow("NuGet", pkg.Name, pkg.Version, status);
+                var redundancy = redundantPackages.FirstOrDefault(candidate => candidate.Name.Equals(package.Name, StringComparison.OrdinalIgnoreCase));
+                table.AddRow("NuGet", Markup.Escape(package.Name), Markup.Escape(package.Version), FormatUsage(package.Usage), Markup.Escape(redundancy?.Source ?? "-"));
             }
 
-            foreach (var pr in project.ProjectReferences)
+            foreach (var reference in project.ProjectReferences)
             {
-                var redundancy =
-                    redundantProjects.FirstOrDefault(r => r.Name.Equals(pr.Path, StringComparison.OrdinalIgnoreCase));
-                
-                string status;
-                if (redundancy != null)
-                {
-                    status = $"[red]Redundant (Transitive via {redundancy.Source})[/]";
-                }
-                else if (!pr.IsUsed)
-                {
-                    status = "[yellow]Uncertain (Not found in code)[/]";
-                }
-                else
-                {
-                    status = "[green]Necessary[/]";
-                }
-                
-                table.AddRow("Project", Path.GetFileNameWithoutExtension(pr.Path), "-", status);
+                var redundancy = redundantProjects.FirstOrDefault(candidate => candidate.Name.Equals(reference.Path, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+                table.AddRow("Project", Markup.Escape(Path.GetFileNameWithoutExtension(reference.Path)), "-", FormatUsage(reference.Usage), Markup.Escape(redundancy?.Source ?? "-"));
             }
 
             AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine($"  Project: [green]{project.Name}[/]");
+            AnsiConsole.MarkupLine($"  Project: [green]{Markup.Escape(project.Name)}[/]");
+
+            foreach (var warning in project.Warnings)
+            {
+                AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(warning)}[/]");
+            }
+
             AnsiConsole.Write(table);
         }
 
         return 0;
     }
+
+    private static bool IsSupportedFile(string path) => path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatUsage(DependencyUsage usage) => usage switch
+    {
+        DependencyUsage.Used => "[green]Used (compiler verified)[/]",
+        DependencyUsage.NotUsed => "[yellow]No compiler usage found[/]",
+        DependencyUsage.NoCompileAssets => "[yellow]No compile assets (review build/runtime)[/]",
+        _ => "[yellow]Unknown (analysis incomplete)[/]"
+    };
 }

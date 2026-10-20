@@ -1,297 +1,243 @@
-﻿using System.Text.Json;
+using System.Text.Json;
+using System.Xml.Linq;
 using DepSniff.Models;
 using Microsoft.Build.Evaluation;
 
 namespace DepSniff.Services;
 
-public class DependencyAnalyzer
+public sealed class DependencyAnalyzer
 {
+    private static readonly StringComparer PathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
     public List<ProjectInfo> AnalyzeSolution(string slnxPath, Action<string>? onProgress = null)
     {
+        var solutionPath = Path.GetFullPath(slnxPath);
+        var solutionFolder = Path.GetDirectoryName(solutionPath)!;
+        var solution = XDocument.Load(solutionPath);
+        var projectPaths = solution.Descendants().Where(element => element.Name.LocalName == "Project").Select(element => (string)element.Attribute("Path")!).Where(path => path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)).Select(path => ResolvePath(solutionFolder, path));
+
+        return AnalyzeProjects(projectPaths, onProgress);
+    }
+
+    public List<ProjectInfo> AnalyzeProjects(IEnumerable<string> projectPaths, Action<string>? onProgress = null)
+    {
         var projects = new List<ProjectInfo>();
-        var solutionFolder = Path.GetDirectoryName(slnxPath) ?? "";
-        var content = File.ReadAllLines(slnxPath);
+        var visited = new HashSet<string>(PathComparer);
+        var pending = new Queue<string>(projectPaths.Select(Path.GetFullPath));
 
-        foreach (var line in content)
+        while (pending.TryDequeue(out var projectPath))
         {
-            if (line.Contains("<Project Path=\""))
+            if (visited.Add(projectPath) is false)
             {
-                var start = line.IndexOf("Path=\"") + 6;
-                var end = line.IndexOf("\"", start);
-                var projectRelativePath = line.Substring(start, end - start);
-                var projectFullPath = Path.GetFullPath(Path.Combine(solutionFolder, projectRelativePath));
+                continue;
+            }
 
-                if (File.Exists(projectFullPath))
-                {
-                    onProgress?.Invoke($"Loading project: {Path.GetFileNameWithoutExtension(projectFullPath)}");
-                    projects.Add(AnalyzeProject(projectFullPath));
-                }
+            onProgress?.Invoke($"Loading project: {Path.GetFileNameWithoutExtension(projectPath)}");
+            var project = AnalyzeProject(projectPath);
+            projects.Add(project);
+
+            foreach (var reference in project.ProjectReferences)
+            {
+                pending.Enqueue(reference.Path);
             }
         }
-
-        // After all projects are loaded, analyze transitive dependencies
-        onProgress?.Invoke("Analyzing transitive dependencies...");
-        AnalyzeTransitiveDependencies(projects, onProgress);
-        
-        onProgress?.Invoke("Resolving project references...");
-        ResolveProjectReferencesInAssets(projects);
 
         return projects;
     }
 
-    private static void ResolveProjectReferencesInAssets(List<ProjectInfo> allProjects)
-    {
-        foreach (var project in allProjects)
-        {
-            // We need to know which packages come from which projects
-            foreach (var pr in project.ProjectReferences)
-            {
-                var referencedProject = allProjects.FirstOrDefault(p => p.Path == pr.Path);
-                if (referencedProject != null)
-                {
-                    foreach (var pkg in referencedProject.Packages)
-                    {
-                        if (!project.Packages.Any(p => p.Name.Equals(pkg.Name, StringComparison.OrdinalIgnoreCase)))
-                        {
-                            project.Packages.Add(pkg with { IsTransitive = true, Source = referencedProject.Name });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     public static ProjectInfo AnalyzeProject(string projectPath)
     {
-        var project = ProjectCollection.GlobalProjectCollection.LoadProject(projectPath);
-        var info = new ProjectInfo(Path.GetFileNameWithoutExtension(projectPath), projectPath);
-
-        var packageReferences = project.GetItems("PackageReference");
-        foreach (var item in packageReferences)
+        var fullPath = Path.GetFullPath(projectPath);
+        using var collection = new ProjectCollection();
+        var project = collection.LoadProject(fullPath);
+        var projectFolder = Path.GetDirectoryName(fullPath)!;
+        var assetsPath = project.GetPropertyValue("ProjectAssetsFile");
+        var info = new ProjectInfo(Path.GetFileNameWithoutExtension(fullPath), fullPath)
         {
-            var name = item.EvaluatedInclude;
-            var version = item.GetMetadataValue("Version");
+            AssetsPath = string.IsNullOrEmpty(assetsPath) ? Path.Combine(projectFolder, "obj", "project.assets.json") : ResolvePath(projectFolder, assetsPath)
+        };
+        var frameworks = project.GetPropertyValue("TargetFrameworks").Split(';', StringSplitOptions.RemoveEmptyEntries);
 
-            if (string.IsNullOrEmpty(version))
+        if (frameworks.Length == 0)
+        {
+            AddProjectItems(project, info);
+        }
+        else
+        {
+            foreach (var framework in frameworks)
             {
-                version = item.GetMetadataValue("VersionOverride");
-                if (string.IsNullOrEmpty(version))
-                {
-                    version = "Centrally Managed";
-                }
+                var frameworkProject = new Project(fullPath, new Dictionary<string, string> { ["TargetFramework"] = framework }, null, collection);
+                AddProjectItems(frameworkProject, info);
             }
-
-            info.Packages.Add(new PackageReference(name, version));
         }
 
-        var projectReferences = project.GetItems("ProjectReference");
-        foreach (var item in projectReferences)
-        {
-            info.ProjectReferences.Add(new ProjectReferenceInfo(Path.GetFullPath(Path.Combine(Path.GetDirectoryName(projectPath)!,
-                item.EvaluatedInclude))));
-        }
-
-        ProjectCollection.GlobalProjectCollection.UnloadProject(project);
         return info;
     }
 
-    private static void AnalyzeTransitiveDependencies(List<ProjectInfo> projects, Action<string>? onProgress = null)
+    private static void AddProjectItems(Project project, ProjectInfo info)
     {
-        foreach (var project in projects)
+        info.TargetFrameworks.Add(project.GetPropertyValue("TargetFramework"));
+
+        foreach (var item in project.GetItems("PackageReference"))
         {
-            onProgress?.Invoke($"Analyzing transitive dependencies for {project.Name}...");
-            var assetsPath = Path.Combine(Path.GetDirectoryName(project.Path)!, "obj", "project.assets.json");
-            if (File.Exists(assetsPath))
+            var version = item.GetMetadataValue("VersionOverride");
+
+            if (string.IsNullOrEmpty(version))
             {
-                try
-                {
-                    using var stream = File.OpenRead(assetsPath);
-                    var doc = JsonDocument.Parse(stream);
+                version = item.GetMetadataValue("Version");
+            }
 
-                    if (doc.RootElement.TryGetProperty("targets", out var targets))
-                    {
-                        foreach (var target in targets.EnumerateObject())
-                        {
-                            foreach (var lib in target.Value.EnumerateObject())
-                            {
-                                var parts = lib.Name.Split('/');
-                                var name = parts[0];
+            if (string.IsNullOrEmpty(version))
+            {
+                version = project.GetItems("PackageVersion").FirstOrDefault(package => package.EvaluatedInclude.Equals(item.EvaluatedInclude, StringComparison.OrdinalIgnoreCase))?.GetMetadataValue("Version") ?? "Centrally Managed";
+            }
 
-                                // If this library is one of our DIRECT references, check its dependencies
-                                var directPkg = project.Packages.FirstOrDefault(p =>
-                                    p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && !p.IsTransitive);
+            var existingPackageIndex = info.Packages.FindIndex(package => package.Name.Equals(item.EvaluatedInclude, StringComparison.OrdinalIgnoreCase));
 
-                                if (directPkg != null && lib.Value.TryGetProperty("dependencies", out var deps))
-                                {
-                                    foreach (var dep in deps.EnumerateObject())
-                                    {
-                                        var depName = dep.Name;
-                                        var depVersion = dep.Value.GetString() ?? "";
+            if (existingPackageIndex < 0)
+            {
+                info.Packages.Add(new PackageReference(item.EvaluatedInclude, version));
+            }
+            else
+            {
+                var existingPackage = info.Packages[existingPackageIndex];
+                var versions = existingPackage.Version.Split(" / ").Append(version).Distinct(StringComparer.OrdinalIgnoreCase);
+                info.Packages[existingPackageIndex] = existingPackage with { Version = string.Join(" / ", versions) };
+            }
+        }
 
-                                        // Add as transitive package
-                                        if (!project.Packages.Any(p =>
-                                                p.Name.Equals(depName, StringComparison.OrdinalIgnoreCase)))
-                                        {
-                                            project.Packages.Add(new PackageReference(depName, depVersion,
-                                                IsTransitive: true, Source: directPkg.Name));
-                                        }
-                                        else if (project.Packages.Any(p =>
-                                                     p.Name.Equals(depName, StringComparison.OrdinalIgnoreCase) &&
-                                                     !p.IsTransitive))
-                                        {
-                                            // It already exists as direct, but we don't mark it here, FindRedundantPackages handles it
-                                        }
-                                    }
-                                }
+        foreach (var item in project.GetItems("ProjectReference"))
+        {
+            var referencePath = ResolvePath(Path.GetDirectoryName(info.Path)!, item.EvaluatedInclude);
 
-                                // Check if it's a project we reference
-                                var referencedProject = project.ProjectReferences.FirstOrDefault(pr =>
-                                    Path.GetFileNameWithoutExtension(pr.Path)
-                                        .Equals(name, StringComparison.OrdinalIgnoreCase));
-                                if (referencedProject != null &&
-                                    lib.Value.TryGetProperty("dependencies", out var projectDeps))
-                                {
-                                    foreach (var dep in projectDeps.EnumerateObject())
-                                    {
-                                        var depName = dep.Name;
-                                        var depVersion = dep.Value.GetString() ?? "";
-
-                                        // If the project we reference has a package, we get it transitively
-                                        if (!project.Packages.Any(p =>
-                                                p.Name.Equals(depName, StringComparison.OrdinalIgnoreCase)))
-                                        {
-                                            project.Packages.Add(new PackageReference(depName, depVersion,
-                                                IsTransitive: true, Source: name));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                catch
-                {
-                    // Ignore errors when reading assets
-                }
+            if (info.ProjectReferences.Any(reference => PathComparer.Equals(reference.Path, referencePath)) is false)
+            {
+                info.ProjectReferences.Add(new ProjectReferenceInfo(referencePath));
             }
         }
     }
 
     public static List<RedundancyInfo> FindRedundantPackages(ProjectInfo project)
     {
+        using var assets = ReadAssets(project);
+
+        if (assets is null)
+        {
+            return [];
+        }
+
+        var targets = assets.RootElement.GetProperty("targets");
         var redundant = new List<RedundancyInfo>();
 
-        var assetsPath = Path.Combine(Path.GetDirectoryName(project.Path)!, "obj", "project.assets.json");
-        if (!File.Exists(assetsPath)) return redundant;
-
-        try
+        foreach (var package in project.Packages)
         {
-            using var stream = File.OpenRead(assetsPath);
-            var doc = JsonDocument.Parse(stream);
+            var sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var applicableTargets = 0;
+            var redundantInEveryTarget = true;
 
-            if (!doc.RootElement.TryGetProperty("targets", out var targets)) return redundant;
-
-            // We only care about direct packages for redundancy check
-            var directPackages = project.Packages.Where(p => !p.IsTransitive).ToList();
-
-            foreach (var direct in directPackages)
+            foreach (var target in targets.EnumerateObject())
             {
-                foreach (var target in targets.EnumerateObject())
-                {
-                    // Check other direct packages for this direct package
-                    foreach (var otherDirect in directPackages.Where(p => p.Name != direct.Name))
-                    {
-                        var chain = GetPackageDependencyChain(direct.Name, otherDirect.Name, target.Value);
-                        if (chain != null)
-                        {
-                            redundant.Add(new RedundancyInfo(direct.Name, otherDirect.Name));
-                            goto NextDirect; // Found a redundancy for this one
-                        }
-                    }
+                var libraries = target.Value.EnumerateObject().ToDictionary(library => library.Name.Split('/')[0], library => library.Value, StringComparer.OrdinalIgnoreCase);
 
-                    // Check project references
-                    foreach (var pr in project.ProjectReferences)
-                    {
-                        var prName = Path.GetFileNameWithoutExtension(pr.Path);
-                        var chain = GetPackageDependencyChain(direct.Name, prName, target.Value);
-                        if (chain != null)
-                        {
-                            redundant.Add(new RedundancyInfo(direct.Name, prName));
-                            goto NextDirect;
-                        }
-                    }
+                if (libraries.ContainsKey(package.Name) is false)
+                {
+                    continue;
                 }
-                NextDirect:;
+
+                applicableTargets++;
+                var roots = GetDirectRoots(project, assets.RootElement, target.Name, libraries);
+                var source = roots.FirstOrDefault(root => root.Equals(package.Name, StringComparison.OrdinalIgnoreCase) is false && HasPackageDependency(package.Name, root, libraries));
+
+                if (source is null)
+                {
+                    redundantInEveryTarget = false;
+                    break;
+                }
+
+                sources.Add(source);
             }
-        }
-        catch
-        {
-            // Fallback to simple check if assets parsing fails
-            var directPackages = project.Packages.Where(p => !p.IsTransitive).ToList();
-            var transitivePackages = project.Packages.Where(p => p.IsTransitive).ToList();
 
-            foreach (var direct in directPackages)
+            if (applicableTargets > 0 && redundantInEveryTarget)
             {
-                var transitive = transitivePackages.FirstOrDefault(t => t.Name.Equals(direct.Name, StringComparison.OrdinalIgnoreCase));
-                if (transitive != null)
-                {
-                    redundant.Add(new RedundancyInfo(direct.Name, transitive.Source ?? "Unknown"));
-                }
+                redundant.Add(new RedundancyInfo(package.Name, string.Join(", ", sources.Order(StringComparer.OrdinalIgnoreCase))));
             }
         }
 
         return redundant;
     }
 
-    private static List<string>? GetPackageDependencyChain(string targetPackage, string currentParent, JsonElement target)
+    private static IEnumerable<string> GetDirectRoots(ProjectInfo project, JsonElement assets, string targetName, Dictionary<string, JsonElement> libraries)
     {
-        // Find the currentParent in target libraries
-        foreach (var lib in target.EnumerateObject())
-        {
-            var libName = lib.Name.Split('/')[0];
-            if (libName.Equals(currentParent, StringComparison.OrdinalIgnoreCase))
-            {
-                if (lib.Value.TryGetProperty("dependencies", out var deps))
-                {
-                    foreach (var dep in deps.EnumerateObject())
-                    {
-                        var depName = dep.Name;
-                        if (depName.Equals(targetPackage, StringComparison.OrdinalIgnoreCase))
-                        {
-                            return [depName];
-                        }
+        var framework = targetName.Split('/')[0];
+        var packageNames = project.Packages.Select(package => package.Name);
 
-                        var chain = GetPackageDependencyChain(targetPackage, depName, target);
-                        if (chain != null)
-                        {
-                            chain.Insert(0, depName);
-                            return chain;
-                        }
+        if (assets.TryGetProperty("project", out var restoredProject) && restoredProject.TryGetProperty("frameworks", out var frameworks) && frameworks.TryGetProperty(framework, out var targetFramework))
+        {
+            var restoredPackageNames = targetFramework.TryGetProperty("dependencies", out var dependencies) ? dependencies.EnumerateObject().Select(dependency => dependency.Name).ToHashSet(StringComparer.OrdinalIgnoreCase) : [];
+            packageNames = packageNames.Where(restoredPackageNames.Contains);
+        }
+
+        var roots = packageNames.Where(libraries.ContainsKey).ToList();
+
+        if (assets.TryGetProperty("libraries", out var assetLibraries))
+        {
+            foreach (var library in assetLibraries.EnumerateObject())
+            {
+                if (library.Value.TryGetProperty("msbuildProject", out var projectPath))
+                {
+                    var fullPath = ResolvePath(Path.GetDirectoryName(project.Path)!, projectPath.GetString()!);
+                    var libraryName = library.Name.Split('/')[0];
+
+                    if (libraries.ContainsKey(libraryName) && project.ProjectReferences.Any(reference => PathComparer.Equals(reference.Path, fullPath)))
+                    {
+                        roots.Add(libraryName);
                     }
                 }
             }
         }
 
-        return null;
+        return roots;
+    }
+
+    private static bool HasPackageDependency(string targetPackage, string parent, Dictionary<string, JsonElement> libraries)
+    {
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pending = new Stack<string>();
+        pending.Push(parent);
+
+        while (pending.TryPop(out var current))
+        {
+            if (visited.Add(current) is false || libraries.TryGetValue(current, out var library) is false || library.TryGetProperty("dependencies", out var dependencies) is false)
+            {
+                continue;
+            }
+
+            foreach (var dependency in dependencies.EnumerateObject())
+            {
+                if (dependency.Name.Equals(targetPackage, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                pending.Push(dependency.Name);
+            }
+        }
+
+        return false;
     }
 
     public List<RedundancyInfo> FindRedundantReferences(ProjectInfo project, List<ProjectInfo> allProjects)
     {
+        var projectsByPath = allProjects.ToDictionary(candidate => candidate.Path, PathComparer);
         var redundant = new List<RedundancyInfo>();
 
-        // 1. Check if a project reference is already obtained through another project reference
-        foreach (var pr in project.ProjectReferences)
+        foreach (var reference in project.ProjectReferences)
         {
-            var otherProjects = project.ProjectReferences.Where(p => p != pr)
-                .Select(p => allProjects.FirstOrDefault(ap => ap.Path == p.Path))
-                .Where(ap => ap != null);
-
-            foreach (var other in otherProjects)
+            foreach (var other in project.ProjectReferences.Where(candidate => PathComparer.Equals(candidate.Path, reference.Path) is false))
             {
-                var chain = GetProjectDependencyChain(pr.Path, other!, allProjects);
-                if (chain != null)
+                if (HasProjectDependency(reference.Path, other.Path, projectsByPath))
                 {
-                    redundant.Add(new RedundancyInfo(pr.Path, other!.Name));
+                    redundant.Add(new RedundancyInfo(reference.Path, Path.GetFileNameWithoutExtension(other.Path)));
                     break;
                 }
             }
@@ -300,143 +246,78 @@ public class DependencyAnalyzer
         return redundant;
     }
 
-    public record RedundancyInfo(string Name, string Source);
-
-    private static List<string>? GetProjectDependencyChain(string targetPath, ProjectInfo current, List<ProjectInfo> allProjects)
+    private static bool HasProjectDependency(string targetPath, string parentPath, Dictionary<string, ProjectInfo> projects)
     {
-        if (current.ProjectReferences.Any(pr => pr.Path == targetPath))
-        {
-            return [Path.GetFileNameWithoutExtension(targetPath)];
-        }
+        var visited = new HashSet<string>(PathComparer);
+        var pending = new Stack<string>();
+        pending.Push(parentPath);
 
-        foreach (var pr in current.ProjectReferences)
+        while (pending.TryPop(out var current))
         {
-            var next = allProjects.FirstOrDefault(p => p.Path == pr.Path);
-            if (next != null)
+            if (visited.Add(current) is false || projects.TryGetValue(current, out var project) is false)
             {
-                var chain = GetProjectDependencyChain(targetPath, next, allProjects);
-                if (chain != null)
+                continue;
+            }
+
+            foreach (var reference in project.ProjectReferences)
+            {
+                if (PathComparer.Equals(reference.Path, targetPath))
                 {
-                    chain.Insert(0, next.Name);
-                    return chain;
+                    return true;
                 }
+
+                pending.Push(reference.Path);
             }
         }
 
-        return null;
+        return false;
     }
 
-    public void AnalyzeUsage(ProjectInfo project, Action<string>? onProgress = null)
+    internal static string GetRestoredFrameworkName(JsonElement assets, string framework)
     {
-        onProgress?.Invoke($"Analyzing usage for {project.Name}...");
-
-        var projectDir = Path.GetDirectoryName(project.Path)!;
-        var csFiles = Directory.GetFiles(projectDir, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
-                        !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
-            .ToList();
-
-        if (csFiles.Count == 0) return;
-
-        var fileContents = csFiles.Select(File.ReadAllText).ToList();
-
-        // Check NuGet packages
-        var assetsPath = Path.Combine(projectDir, "obj", "project.assets.json");
-        var packageAssemblies = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-
-        if (File.Exists(assetsPath))
+        if (assets.TryGetProperty("project", out var project) && project.TryGetProperty("frameworks", out var frameworks))
         {
-            try
+            foreach (var restoredFramework in frameworks.EnumerateObject())
             {
-                using var stream = File.OpenRead(assetsPath);
-                var doc = JsonDocument.Parse(stream);
-                if (doc.RootElement.TryGetProperty("targets", out var targets))
+                if (restoredFramework.Name.Equals(framework, StringComparison.OrdinalIgnoreCase) || restoredFramework.Value.TryGetProperty("targetAlias", out var alias) && string.Equals(alias.GetString(), framework, StringComparison.OrdinalIgnoreCase))
                 {
-                    foreach (var target in targets.EnumerateObject())
-                    {
-                        foreach (var lib in target.Value.EnumerateObject())
-                        {
-                            var parts = lib.Name.Split('/');
-                            var name = parts[0];
-
-                            if (lib.Value.TryGetProperty("compile", out var compile))
-                            {
-                                var dlls = new List<string>();
-                                foreach (var dll in compile.EnumerateObject())
-                                {
-                                    var dllName = Path.GetFileNameWithoutExtension(dll.Name);
-                                    if (!string.IsNullOrEmpty(dllName) && dllName != "_._")
-                                    {
-                                        dlls.Add(dllName);
-                                    }
-                                }
-
-                                if (dlls.Count > 0)
-                                {
-                                    if (packageAssemblies.TryGetValue(name, out var existing))
-                                    {
-                                        existing.AddRange(dlls);
-                                    }
-                                    else
-                                    {
-                                        packageAssemblies[name] = dlls;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    return restoredFramework.Name;
                 }
-            }
-            catch
-            {
-                // Ignore assets parsing errors
             }
         }
 
-        foreach (var pkg in project.Packages.Where(p => !p.IsTransitive))
+        return framework;
+    }
+
+    internal static JsonDocument? ReadAssets(ProjectInfo project)
+    {
+        try
         {
-            // Try to find if any assembly from this package is used
-            var searchStrings = new List<string> { pkg.Name };
-            if (packageAssemblies.TryGetValue(pkg.Name, out var dlls))
+            using var stream = File.OpenRead(project.AssetsPath);
+            var document = JsonDocument.Parse(stream);
+
+            if (document.RootElement.ValueKind is not JsonValueKind.Object || document.RootElement.TryGetProperty("targets", out var targets) is false || targets.ValueKind is not JsonValueKind.Object)
             {
-                searchStrings.AddRange(dlls);
+                document.Dispose();
+                throw new JsonException("The assets file does not contain dependency targets.");
             }
 
-            searchStrings = searchStrings.Distinct().ToList();
-
-            var isUsed = false;
-            foreach (var content in fileContents)
-            {
-                foreach (var s in searchStrings)
-                {
-                    // Simple check: does the assembly name appear as a word?
-                    // This catches 'using Spectre.Console;' and 'Spectre.Console.AnsiConsole'
-                    if (content.Contains(s))
-                    {
-                        isUsed = true;
-                        break;
-                    }
-                }
-                if (isUsed) break;
-            }
-
-            pkg.IsUsed = isUsed;
+            return document;
         }
-
-        // Check Project references
-        foreach (var pr in project.ProjectReferences)
+        catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
         {
-            var prName = Path.GetFileNameWithoutExtension(pr.Path);
-            var isUsed = false;
-            foreach (var content in fileContents)
+            var warning = $"Cannot read restored dependencies for {project.Name}: {exception.Message} Run dotnet restore before analyzing.";
+
+            if (project.Warnings.Contains(warning) is false)
             {
-                if (content.Contains(prName))
-                {
-                    isUsed = true;
-                    break;
-                }
+                project.Warnings.Add(warning);
             }
-            pr.IsUsed = isUsed;
+
+            return null;
         }
     }
+
+    private static string ResolvePath(string folder, string path) => Path.GetFullPath(Path.Combine(folder, path.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar)));
+
+    public sealed record RedundancyInfo(string Name, string Source);
 }
