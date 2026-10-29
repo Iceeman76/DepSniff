@@ -1,9 +1,9 @@
 using System.Text.Json;
 using System.Xml.Linq;
-using DepSniff.Models;
+using DotNetLab.DepSniff.Models;
 using Microsoft.Build.Evaluation;
 
-namespace DepSniff.Services;
+namespace DotNetLab.DepSniff.Services;
 
 public sealed class DependencyAnalyzer
 {

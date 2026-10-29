@@ -1,11 +1,11 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
-using DepSniff.Models;
-using DepSniff.Services;
+using DotNetLab.DepSniff.Models;
+using DotNetLab.DepSniff.Services;
 using NUnit.Framework;
 
-namespace DepSniff.Tests;
+namespace DotNetLab.DepSniff.Tests;
 
 [TestFixture]
 public sealed class SemanticUsageAnalyzerTests

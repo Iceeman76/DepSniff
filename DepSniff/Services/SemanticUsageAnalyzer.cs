@@ -1,10 +1,10 @@
 using System.Text.Json;
-using DepSniff.Models;
+using DotNetLab.DepSniff.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
-using ProjectInfo = DepSniff.Models.ProjectInfo;
+using ProjectInfo = DotNetLab.DepSniff.Models.ProjectInfo;
 
-namespace DepSniff.Services;
+namespace DotNetLab.DepSniff.Services;
 
 public sealed class SemanticUsageAnalyzer
 {

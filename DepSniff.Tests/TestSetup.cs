@@ -1,7 +1,7 @@
 using Microsoft.Build.Locator;
 using NUnit.Framework;
 
-namespace DepSniff.Tests;
+namespace DotNetLab.DepSniff.Tests;
 
 [SetUpFixture]
 public sealed class TestSetup

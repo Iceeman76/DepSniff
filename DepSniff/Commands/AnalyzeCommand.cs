@@ -1,10 +1,10 @@
 using System.ComponentModel;
-using DepSniff.Services;
-using DepSniff.Models;
+using DotNetLab.DepSniff.Models;
+using DotNetLab.DepSniff.Services;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
-namespace DepSniff.Commands;
+namespace DotNetLab.DepSniff.Commands;
 
 public sealed class AnalyzeCommand : AsyncCommand<AnalyzeCommand.Settings>
 {

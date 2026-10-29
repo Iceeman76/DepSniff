@@ -1,9 +1,9 @@
-using DepSniff.Commands;
+using DotNetLab.DepSniff.Commands;
 using Microsoft.Build.Locator;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
-namespace DepSniff;
+namespace DotNetLab.DepSniff;
 
 public static class Program
 {

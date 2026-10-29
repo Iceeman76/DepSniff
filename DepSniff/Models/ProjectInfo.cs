@@ -1,4 +1,4 @@
-namespace DepSniff.Models;
+namespace DotNetLab.DepSniff.Models;
 
 public sealed record ProjectReferenceInfo(string Path)
 {
