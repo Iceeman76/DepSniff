@@ -27,7 +27,7 @@ public sealed class DependencyAnalyzerTests
     public void FindRedundantPackagesFindsDeepTransitiveDependenciesIgnoringCase()
     {
         project.Packages.AddRange([new PackageReference("Parent", "1.0.0"), new PackageReference("Child", "1.0.0")]);
-        WriteTargets(("net10.0", """
+        WriteTargets(("net11.0", """
             { "Parent/1.0.0": { "dependencies": { "Intermediate": "1.0.0" } }, "Intermediate/1.0.0": { "dependencies": { "child": "1.0.0" } }, "Child/1.0.0": {} }
             """));
         var result = DependencyAnalyzer.FindRedundantPackages(project);
@@ -39,7 +39,7 @@ public sealed class DependencyAnalyzerTests
     public void FindRedundantPackagesTerminatesForCyclicDependencies()
     {
         project.Packages.AddRange([new PackageReference("Parent", "1.0.0"), new PackageReference("Unrelated", "1.0.0")]);
-        WriteTargets(("net10.0", """
+        WriteTargets(("net11.0", """
             { "Parent/1.0.0": { "dependencies": { "Other": "1.0.0" } }, "Other/1.0.0": { "dependencies": { "Parent": "1.0.0" } }, "Unrelated/1.0.0": {} }
             """));
 
@@ -50,7 +50,7 @@ public sealed class DependencyAnalyzerTests
     public void FindRedundantPackagesRequiresTransitiveDependencyInEveryTarget()
     {
         project.Packages.AddRange([new PackageReference("Parent", "1.0.0"), new PackageReference("Child", "1.0.0")]);
-        WriteTargets(("net9.0", """{ "Parent/1.0.0": { "dependencies": { "Child": "1.0.0" } }, "Child/1.0.0": {} }"""), ("net10.0", """{ "Parent/1.0.0": {}, "Child/1.0.0": {} }"""));
+        WriteTargets(("net9.0", """{ "Parent/1.0.0": { "dependencies": { "Child": "1.0.0" } }, "Child/1.0.0": {} }"""), ("net11.0", """{ "Parent/1.0.0": {}, "Child/1.0.0": {} }"""));
 
         Assert.That(DependencyAnalyzer.FindRedundantPackages(project), Is.Empty);
     }
@@ -60,7 +60,7 @@ public sealed class DependencyAnalyzerTests
     {
         project.Packages.AddRange([new PackageReference("Parent", "1.0.0"), new PackageReference("Child", "1.0.0")]);
         const string libraries = """{ "Parent/1.0.0": { "dependencies": { "Child": "1.0.0" } }, "Child/1.0.0": {} }""";
-        WriteTargets(("net9.0", libraries), ("net10.0", libraries));
+        WriteTargets(("net9.0", libraries), ("net11.0", libraries));
 
         Assert.That(DependencyAnalyzer.FindRedundantPackages(project).Select(result => result.Name), Is.EqualTo(new[] { "Child" }));
     }
@@ -71,8 +71,8 @@ public sealed class DependencyAnalyzerTests
         project.Packages.AddRange([new PackageReference("Parent", "1.0.0"), new PackageReference("Child", "1.0.0")]);
         File.WriteAllText(project.AssetsPath, """
             {
-              "targets": { "net10.0": { "Parent/1.0.0": { "dependencies": { "Child": "1.0.0" } }, "Child/1.0.0": {} } },
-              "project": { "frameworks": { "net10.0": { "dependencies": { "Child": {} } } } }
+              "targets": { "net11.0": { "Parent/1.0.0": { "dependencies": { "Child": "1.0.0" } }, "Child/1.0.0": {} } },
+              "project": { "frameworks": { "net11.0": { "dependencies": { "Child": {} } } } }
             }
             """);
 
@@ -95,7 +95,7 @@ public sealed class DependencyAnalyzerTests
         project.ProjectReferences.Add(new ProjectReferenceInfo(Path.Combine(projectFolder, "Library.csproj")));
         File.WriteAllText(project.AssetsPath, """
             {
-              "targets": { "net10.0": { "Custom.Assembly/1.0.0": { "type": "project", "dependencies": { "Child": "1.0.0" } }, "Child/1.0.0": {} } },
+              "targets": { "net11.0": { "Custom.Assembly/1.0.0": { "type": "project", "dependencies": { "Child": "1.0.0" } }, "Child/1.0.0": {} } },
               "libraries": { "Custom.Assembly/1.0.0": { "type": "project", "msbuildProject": "Library.csproj" } }
             }
             """);
@@ -177,9 +177,9 @@ public sealed class DependencyAnalyzerTests
     {
         File.WriteAllText(project.Path, """
             <Project Sdk="Microsoft.NET.Sdk">
-              <PropertyGroup><TargetFrameworks>net9.0;net10.0</TargetFrameworks></PropertyGroup>
+              <PropertyGroup><TargetFrameworks>net9.0;net11.0</TargetFrameworks></PropertyGroup>
               <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'"><PackageReference Include="Older" Version="1.0.0" /></ItemGroup>
-              <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'"><PackageReference Include="Newer" Version="1.0.0" /></ItemGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net11.0'"><PackageReference Include="Newer" Version="1.0.0" /></ItemGroup>
             </Project>
             """);
         var result = DependencyAnalyzer.AnalyzeProject(project.Path);
@@ -192,9 +192,9 @@ public sealed class DependencyAnalyzerTests
     {
         File.WriteAllText(project.Path, """
             <Project Sdk="Microsoft.NET.Sdk">
-              <PropertyGroup><TargetFrameworks>net9.0;net10.0</TargetFrameworks></PropertyGroup>
+              <PropertyGroup><TargetFrameworks>net9.0;net11.0</TargetFrameworks></PropertyGroup>
               <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'"><PackageReference Include="Example" Version="1.0.0" /></ItemGroup>
-              <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'"><PackageReference Include="Example" Version="2.0.0" /></ItemGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net11.0'"><PackageReference Include="Example" Version="2.0.0" /></ItemGroup>
             </Project>
             """);
         var result = DependencyAnalyzer.AnalyzeProject(project.Path);
@@ -208,5 +208,5 @@ public sealed class DependencyAnalyzerTests
         File.WriteAllText(project.AssetsPath, JsonSerializer.Serialize(assets));
     }
 
-    private void WriteProject(string name, string items = "") => File.WriteAllText(Path.Combine(projectFolder, name), $"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>{items}</Project>");
+    private void WriteProject(string name, string items = "") => File.WriteAllText(Path.Combine(projectFolder, name), $"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>{items}</Project>");
 }

@@ -32,10 +32,10 @@ public sealed class SemanticUsageAnalyzerTests
             """;
         var assemblyFolder = Directory.CreateDirectory(Path.Combine(fixtureFolder, "assembly")).FullName;
         var assemblyProject = Path.Combine(assemblyFolder, "Different.Assembly.csproj");
-        await File.WriteAllTextAsync(assemblyProject, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>""");
+        await File.WriteAllTextAsync(assemblyProject, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>""");
         await File.WriteAllTextAsync(Path.Combine(assemblyFolder, "Library.cs"), source);
         await RunDotNetAsync("build", assemblyProject, "--configuration", "Release", "--source", feedFolder, "-p:NuGetAudit=false");
-        await CreatePackageAsync("Fixture.Package", "lib/net10.0/Different.Assembly.dll", await File.ReadAllBytesAsync(Path.Combine(assemblyFolder, "bin", "Release", "net10.0", "Different.Assembly.dll")));
+        await CreatePackageAsync("Fixture.Package", "lib/net11.0/Different.Assembly.dll", await File.ReadAllBytesAsync(Path.Combine(assemblyFolder, "bin", "Release", "net11.0", "Different.Assembly.dll")));
         await CreatePackageAsync("Build.Only", "build/Build.Only.targets", Encoding.UTF8.GetBytes("<Project />"));
     }
 
@@ -125,9 +125,9 @@ public sealed class SemanticUsageAnalyzerTests
     {
         var libraryFolder = Directory.CreateDirectory(Path.Combine(fixtureFolder, Guid.NewGuid().ToString("N"))).FullName;
         var libraryPath = Path.Combine(libraryFolder, "Library.csproj");
-        await File.WriteAllTextAsync(libraryPath, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><AssemblyName>Custom.Identity</AssemblyName></PropertyGroup></Project>""");
+        await File.WriteAllTextAsync(libraryPath, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework><AssemblyName>Custom.Identity</AssemblyName></PropertyGroup></Project>""");
         await File.WriteAllTextAsync(Path.Combine(libraryFolder, "Library.cs"), "namespace Another.Namespace; public sealed class Widget {}");
-        await File.WriteAllTextAsync(projectPath, $"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include=\"{libraryPath}\" /></ItemGroup></Project>");
+        await File.WriteAllTextAsync(projectPath, $"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Include=\"{libraryPath}\" /></ItemGroup></Project>");
         await File.WriteAllTextAsync(Path.Combine(projectFolder, "App.cs"), used ? "public sealed class App { public Another.Namespace.Widget Value { get; } }" : "public sealed class App { public string Name => \"Library Custom.Identity Another.Namespace\"; }");
         await RestoreAsync();
         var project = DependencyAnalyzer.AnalyzeProject(projectPath);
@@ -140,7 +140,7 @@ public sealed class SemanticUsageAnalyzerTests
     [Test]
     public async Task CombinesUsageAcrossFrameworksWithConditionalCompilation()
     {
-        await WriteProjectAsync(items: "<PropertyGroup><TargetFramework /><TargetFrameworks>net10.0;net10.0-windows</TargetFrameworks></PropertyGroup>");
+        await WriteProjectAsync(items: "<PropertyGroup><TargetFramework /><TargetFrameworks>net11.0;net11.0-windows</TargetFrameworks></PropertyGroup>");
         await File.WriteAllTextAsync(Path.Combine(projectFolder, "App.cs"), """
             public sealed class App
             {
@@ -160,7 +160,7 @@ public sealed class SemanticUsageAnalyzerTests
     [Test]
     public async Task FailedFrameworkPreventsUnusedConclusion()
     {
-        await WriteProjectAsync(items: "<PropertyGroup><TargetFramework /><TargetFrameworks>net10.0;net10.0-windows</TargetFrameworks></PropertyGroup>");
+        await WriteProjectAsync(items: "<PropertyGroup><TargetFramework /><TargetFrameworks>net11.0;net11.0-windows</TargetFrameworks></PropertyGroup>");
         await File.WriteAllTextAsync(Path.Combine(projectFolder, "App.cs"), """
             public sealed class App
             {
@@ -189,7 +189,7 @@ public sealed class SemanticUsageAnalyzerTests
         await asset.WriteAsync(content);
     }
 
-    private Task WriteProjectAsync(string packageName = "Fixture.Package", string items = "") => File.WriteAllTextAsync(projectPath, $"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include=\"{packageName}\" Version=\"1.0.0\" /></ItemGroup>{items}</Project>");
+    private Task WriteProjectAsync(string packageName = "Fixture.Package", string items = "") => File.WriteAllTextAsync(projectPath, $"<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include=\"{packageName}\" Version=\"1.0.0\" /></ItemGroup>{items}</Project>");
 
     private Task RestoreAsync() => RunDotNetAsync("restore", projectPath, "--source", feedFolder, "--packages", Path.Combine(projectFolder, "packages"), "-p:NuGetAudit=false");
 

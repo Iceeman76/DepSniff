@@ -17,11 +17,11 @@
 - 🔗 **Redundancy Detection**: Identifies NuGet packages and project references that are explicitly added but already inherited transitively.
 - 🔍 **Usage Analysis**: Uses Roslyn and MSBuildWorkspace to identify assembly references used by the C# compiler, including aliases, attributes, extension methods and conditional compilation across target frameworks.
 - 📊 **Clear Reporting**: Generates easy-to-read tables using [Spectre.Console](https://spectreconsole.net/) to show the status of each dependency.
-- 🛠️ **Built on .NET 10**: Loads projects with the installed .NET SDK and analyzes their compilations without emitting application binaries.
+- 🛠️ **Built on .NET 11**: Loads projects with the installed .NET SDK and analyzes their compilations without emitting application binaries.
 
 ## Prerequisites
 
-- [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+- [.NET 11.0 SDK](https://dotnet.microsoft.com/download/dotnet/11.0).
 
 MSBuild is loaded from the installed SDK at runtime.
 
@@ -86,4 +86,4 @@ dotnet build --configuration Release
 dotnet test --configuration Release --no-build
 ```
 
-The NUnit regression suite covers dependency cycles, multiple target frameworks, solution parsing, compiler usage, evaluated source items and missing restore data. Semantic integration tests build local fixture packages and restore from a local feed. CI builds and runs the tests on Windows and Linux with .NET 10.
+The NUnit regression suite covers dependency cycles, multiple target frameworks, solution parsing, compiler usage, evaluated source items and missing restore data. Semantic integration tests build local fixture packages and restore from a local feed. CI builds and runs the tests on Windows and Linux with .NET 11.
