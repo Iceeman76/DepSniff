@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/depsniff-social-preview.png" alt="DepSniff logo with a detective holding a magnifying glass" width="1040" />
+</div>
+
 | Package | NuGet |
 | :--- | :--- |
 | Microsoft.Build | [![NuGet](https://img.shields.io/nuget/v/Microsoft.Build.svg)](https://www.nuget.org/packages/Microsoft.Build/) |
